@@ -1,6 +1,50 @@
 import re
 from utils.command_runner import run_command
 
+def get_gpu_driver_info():
+    """
+    Kategori 2: Grafik Sürücü (GPU) Denetimi
+    Sistemdeki VGA uyumlu (Ekran Kartı) aygıtları ve kullandıkları çekirdek sürücülerini listeler.
+    
+    Returns:
+        list[dict]: Her biri bir GPU'yu temsil eden ve 'model' ile 'driver' anahtarlarını
+                    içeren sözlüklerin bir listesi.
+    """
+    stdout, stderr, retcode = run_command(["lspci", "-k"])
+    
+    if retcode != 0:
+        print(f"Uyarı: PCI aygıtları listelenemedi. Hata: {stderr}")
+        return [{"model": "lspci komutu çalıştırılamadı.", "driver": "Bilinmiyor"}]
+
+    gpu_info = []
+    
+    # Çıktıyı, her bir aygıt ayrı bir eleman olacak şekilde bölüyoruz.
+    device_blocks = re.split(r'\n(?=\S)', stdout.strip())
+
+    for block in device_blocks:
+        # Eğer blok bir ekran kartı değilse, atla.
+        if "VGA compatible controller" not in block and "3D controller" not in block:
+            continue
+            
+        lines = block.strip().split('\n')
+        if not lines:
+            continue
+
+        # Model bilgisini ilk satırdan al ve temizle.
+        model = lines[0].split(':', 1)[-1].strip()
+        
+        # Sürücü bilgisini "Kernel driver in use:" satırından bul.
+        driver = "Sürücü Yüklenmemiş" # Varsayılan değer
+        for line in lines:
+            if "Kernel driver in use:" in line:
+                driver = line.split(':', 1)[-1].strip()
+                break # Sürücüyü bulunca döngüden çık
+        
+        gpu_info.append({"model": model, "driver": driver})
+
+    return gpu_info
+
+
 def get_missing_pci_drivers():
     """
     Kategori 2: PCI Aygıt Sürücü Analizi
@@ -19,17 +63,9 @@ def get_missing_pci_drivers():
 
     problematic_devices = []
     
-    # --- YENİ EKLENEN FİLTRE LİSTESİ ---
-    # Genellikle sürücü gerektirmeyen veya sürücüsüz görünmesi normal olan
-    # aygıtların anahtar kelimelerini içeren liste.
     ignore_list = [
-        "Bridge",
-        "RAM memory",
-        "SRAM",
-        "ISA bridge",
-        "System peripheral",
-        "SMBus",
-        "Signal processing controller"
+        "Bridge", "RAM memory", "SRAM", "ISA bridge", "System peripheral",
+        "SMBus", "Signal processing controller"
     ]
     
     device_blocks = re.split(r'\n(?=\S)', stdout.strip())
@@ -41,8 +77,6 @@ def get_missing_pci_drivers():
 
         device_description = lines[0]
         has_driver = any("Kernel driver in use:" in line for line in lines)
-        
-        # Eğer sürücü yoksa VE aygıt açıklaması ignore_list'teki hiçbir kelimeyi içermiyorsa
         is_ignorable = any(keyword in device_description for keyword in ignore_list)
 
         if not has_driver and not is_ignorable:
