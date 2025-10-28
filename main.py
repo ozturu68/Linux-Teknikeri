@@ -4,17 +4,11 @@ from rich.table import Table
 # Kendi yazdığımız veri toplama modüllerini içe aktarıyoruz.
 from checks.check_system import get_system_info
 from checks.check_hardware import get_hardware_info
+from checks.check_disk import get_disk_usage
 
 def create_info_table(title: str, data: dict) -> Table:
     """
-    Verilen başlık ve veri ile bir rich Table nesnesi oluşturur ve doldurur.
-    
-    Args:
-        title (str): Tablonun başlığı.
-        data (dict): Tabloya eklenecek anahtar-değer verileri.
-
-    Returns:
-        Table: Doldurulmuş ve hazır bir Table nesnesi.
+    Verilen başlık ve basit anahtar-değer verisi ile bir rich Table nesnesi oluşturur.
     """
     table = Table(title=f"[bold]{title}[/bold]")
     table.add_column("Bileşen", justify="right", style="cyan", no_wrap=True)
@@ -44,6 +38,34 @@ def main():
     hardware_data = get_hardware_info()
     hardware_table = create_info_table("Donanım Envanteri", hardware_data)
     console.print(hardware_table)
+
+    # --- 3. Disk Kullanım Analizi ---
+    console.print("\n[yellow]3. Disk Kullanım Analizi toplanıyor...[/yellow]")
+    disk_partitions = get_disk_usage()
+    
+    # Disk kullanımı için yeni ve daha detaylı bir tablo oluşturuyoruz.
+    disk_table = Table(title="[bold]Disk Kullanım Alanları[/bold]")
+    disk_table.add_column("Bölüm", style="cyan")
+    disk_table.add_column("Bağlama Noktası", style="magenta")
+    disk_table.add_column("Dosya Sistemi", style="green")
+    disk_table.add_column("Toplam", justify="right", style="white")
+    disk_table.add_column("Kullanılan", justify="right", style="yellow")
+    disk_table.add_column("Boş", justify="right", style="green")
+    disk_table.add_column("Kullanım %", justify="right", style="bold red")
+
+    # Her bir disk bölümü için tabloya bir satır ekliyoruz.
+    for p in disk_partitions:
+        disk_table.add_row(
+            p["device"],
+            p["mountpoint"],
+            p["fstype"],
+            p["total"],
+            p["used"],
+            p["free"],
+            p["percent_used"]
+        )
+    
+    console.print(disk_table)
 
 
 if __name__ == "__main__":
