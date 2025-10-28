@@ -1,11 +1,14 @@
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich.columns import Columns
 
 # Kendi yazdığımız veri toplama modüllerini içe aktarıyoruz.
 from checks.check_system import get_system_info
 from checks.check_hardware import get_hardware_info
 from checks.check_disk import get_disk_usage
 from checks.check_network import get_network_info
+from checks.check_services import get_running_services
 
 def create_info_table(title: str, data: dict) -> Table:
     """
@@ -55,15 +58,9 @@ def main():
 
     for p in disk_partitions:
         disk_table.add_row(
-            p["device"],
-            p["mountpoint"],
-            p["fstype"],
-            p["total"],
-            p["used"],
-            p["free"],
-            p["percent_used"]
+            p["device"], p["mountpoint"], p["fstype"], p["total"],
+            p["used"], p["free"], p["percent_used"]
         )
-    
     console.print(disk_table)
 
     # --- 4. Ağ Analizi ---
@@ -71,6 +68,22 @@ def main():
     network_data = get_network_info()
     network_table = create_info_table("Ağ Bilgileri", network_data)
     console.print(network_table)
+
+    # --- 5. Aktif Servisler Analizi ---
+    console.print("\n[yellow]5. Aktif Servisler Analizi yapılıyor...[/yellow]")
+    running_services = get_running_services()
+    
+    if running_services:
+        # Servis listesini çok sütunlu bir düzende göstermek için Columns kullanıyoruz.
+        service_columns = Columns(sorted(running_services), equal=True, expand=True)
+        # Bu sütunları daha şık bir görünüm için bir Panel içine yerleştiriyoruz.
+        console.print(Panel(
+            service_columns, 
+            title="[bold]Aktif Çalışan Servisler[/bold]", 
+            border_style="green"
+        ))
+    else:
+        console.print("[red]Aktif servisler listelenemedi veya hiç servis çalışmıyor.[/red]")
 
 
 if __name__ == "__main__":
