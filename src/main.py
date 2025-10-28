@@ -13,8 +13,10 @@ from checks.check_services import get_running_services, get_failed_services
 from checks.check_drivers import get_missing_pci_drivers, get_gpu_driver_info
 from checks.check_storage import check_smart_health
 from checks.check_security import get_security_summary, get_listening_ports
+from checks.check_performance import get_top_processes # <-- YENİ MODÜL
 
 def create_info_table(title: str, data: dict) -> Table:
+    """Verilen başlık ve sözlük verisi ile bir rich Table oluşturur."""
     table = Table(title=f"[dim]{title}[/dim]", title_justify="left")
     table.add_column("Bileşen", justify="right", style="cyan", no_wrap=True)
     table.add_column("Değer", style="magenta")
@@ -23,6 +25,7 @@ def create_info_table(title: str, data: dict) -> Table:
     return table
 
 def main():
+    """Ana program fonksiyonu."""
     console = Console()
     console.print("[bold cyan]Linux Teknikeri: Kapsamlı Sistem Analizi[/bold cyan]", justify="center", style="underline")
 
@@ -88,34 +91,50 @@ def main():
     elif fw_status == "Yetki Gerekli": security_findings.append("[yellow]Uyarı:[/] Güvenlik duvarı durumu için 'sudo' yetkisi gerekiyor."); is_secure = False
     panel_color = "green" if is_secure else "yellow"; panel_title = "[bold green]Güvenlik Durumu: GÜVENLİ[/]" if is_secure else "[bold yellow]Güvenlik Durumu: İYİLEŞTİRME GEREKLİ[/]"; console.print(Panel(Text.from_markup("\n".join(security_findings)), title=panel_title, border_style=panel_color))
 
-    # GÜNCELLENMİŞ BÖLÜM
     console.print("\n[bold]11. Ağ Dinleme Portları[/bold]")
     listening_ports = get_listening_ports()
-    if listening_ports and listening_ports[0]['protocol'] == "HATA":
-        console.print(Panel(Text(listening_ports[0]['address'], style="yellow"), title="[yellow]Port Analizi Yapılamadı[/yellow]", border_style="yellow"))
+    if listening_ports and listening_ports[0]['protocol'] == "HATA": console.print(Panel(Text(listening_ports[0]['address'], style="yellow"), title="[yellow]Port Analizi Yapılamadı[/yellow]", border_style="yellow"))
     else:
-        port_table = Table(title="[dim]Dış Bağlantıları Dinleyen Aktif Portlar[/dim]", title_justify="left")
-        port_table.add_column("Protokol", style="white")
-        port_table.add_column("Adres", style="cyan")
-        port_table.add_column("Port", style="magenta")
-        port_table.add_column("Kullanan İşlem", style="green")
-        
+        port_table = Table(title="[dim]Dış Bağlantıları Dinleyen Aktif Portlar[/dim]", title_justify="left"); port_table.add_column("Protokol", style="white"); port_table.add_column("Adres", style="cyan"); port_table.add_column("Port", style="magenta"); port_table.add_column("Kullanan İşlem", style="green")
         has_external_ports = False
-        # Gelişmiş filtreleme: Sadece '0.0.0.0' ve '[::]' (tüm adresler) dışarıya açık kabul edilir.
         for port_info in listening_ports:
-            if port_info["address"] == "0.0.0.0" or port_info["address"] == "[::]":
-                port_table.add_row(
-                    port_info["protocol"],
-                    port_info["address"],
-                    port_info["port"],
-                    port_info["process"]
-                )
-                has_external_ports = True
-        
-        if has_external_ports:
-            console.print(port_table)
-        else:
-            console.print(Panel(Text("Sistemde tüm ağ arayüzlerine açık (0.0.0.0 veya [::]) bir port bulunmuyor.", style="green"), title="[green]Ağ Durumu: GÜVENLİ[/green]", border_style="green"))
+            if port_info["address"] == "0.0.0.0" or port_info["address"] == "[::]": port_table.add_row(port_info["protocol"], port_info["address"], port_info["port"], port_info["process"]); has_external_ports = True
+        if has_external_ports: console.print(port_table)
+        else: console.print(Panel(Text("Sistemde tüm ağ arayüzlerine açık (0.0.0.0 veya [::]) bir port bulunmuyor.", style="green"), title="[green]Ağ Durumu: GÜVENLİ[/green]", border_style="green"))
+
+    # --- YENİ EKLENEN BÖLÜM ---
+    # 12. Yüksek Kaynak Tüketen İşlemler
+    console.print("\n[bold]12. Yüksek Kaynak Tüketen İşlemler[/bold]")
+    top_processes = get_top_processes(count=5)
+
+    if top_processes and top_processes[0]['user'] == 'HATA':
+        console.print(Panel(
+            Text(top_processes[0]['command'], style="yellow"),
+            title="[yellow]Performans Analizi Yapılamadı[/yellow]",
+            border_style="yellow"
+        ))
+    elif not top_processes:
+        console.print(Panel(
+            Text("Analiz edilecek bir işlem bulunamadı.", style="green"),
+            title="[green]İşlem Durumu[/green]",
+            border_style="green"
+        ))
+    else:
+        process_table = Table(title="[dim]CPU ve Bellek Kullanımına Göre İlk 5 İşlem[/dim]", title_justify="left")
+        process_table.add_column("Kullanıcı", style="cyan")
+        process_table.add_column("%CPU", style="magenta", justify="right")
+        process_table.add_column("%Bellek", style="yellow", justify="right")
+        process_table.add_column("Komut", style="green")
+
+        for proc in top_processes:
+            process_table.add_row(
+                proc["user"],
+                proc["cpu"],
+                proc["mem"],
+                proc["command"]
+            )
+        console.print(process_table)
+
 
 if __name__ == "__main__":
     main()
