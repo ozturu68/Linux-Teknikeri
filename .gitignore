@@ -1,0 +1,14 @@
+# Python Sanal Ortamı
+/venv/
+
+# Python Önbellek Dosyaları
+__pycache__/
+*.py[cod]
+
+# IDE/Editör Ayarları
+.vscode/
+.idea/
+
+# Geçici Rapor ve Log Dosyaları
+*.txt
+*.log
