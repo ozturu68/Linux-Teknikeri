@@ -1,34 +1,51 @@
 from utils.command_runner import run_command
 
-def get_running_services():
+def _get_services_by_state(state: str) -> list[str]:
     """
-    Sistemde aktif olarak çalışan systemd servislerini listeler.
-    
-    Returns:
-        list[str]: Çalışan servislerin isimlerini içeren bir liste.
+    Verilen duruma göre (örn: 'running', 'failed') servisleri listeleyen özel bir yardımcı fonksiyon.
     """
-    # Komutumuz: Sadece 'service' tipindeki ve 'running' durumundaki birimleri listele.
-    # '--no-legend' ve '--no-pager' çıktılarını temiz tutar.
-    command = ["systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--no-pager"]
+    command = ["systemctl", "list-units", "--type=service", f"--state={state}", "--no-legend", "--no-pager"]
     
     stdout, stderr, returncode = run_command(command)
     
     if returncode != 0:
-        # Eğer systemctl komutu hata verirse, boş bir liste ve bir uyarı döndürebiliriz.
-        print(f"Uyarı: Servisler listelenemedi. Hata: {stderr}")
+        print(f"Uyarı: '{state}' durumundaki servisler listelenemedi. Hata: {stderr}")
         return []
 
-    running_services = []
-    # Komut çıktısını satırlara ayırıyoruz.
-    lines = stdout.strip().split('\n')
+    services = []
+    lines = stdout.strip().splitlines()
     
     for line in lines:
-        # systemctl çıktısı boşluklarla ayrılmış sütunlardan oluşur.
-        # İlk sütun servis adını içerir.
+        if not line.strip():
+            continue
+
         parts = line.split()
-        if parts:
-            # systemctl bazen satır başına bir '●' karakteri koyar, bunu temizleyelim.
-            service_name = parts[0].strip('●')
-            running_services.append(service_name)
+        
+        # Eğer satır boşluklara bölündükten sonra boşsa atla
+        if not parts:
+            continue
+
+        # Düzeltilmiş mantık:
+        # Eğer satır '●' ile başlıyorsa, servis adı ikinci elemandır (parts[1]).
+        # Aksi halde, ilk elemandır (parts[0]).
+        service_name = ""
+        if parts[0] == '●':
+            # Listenin en az iki elemanı olduğundan emin ol
+            if len(parts) > 1:
+                service_name = parts[1]
+        else:
+            service_name = parts[0]
+        
+        # Eğer bir servis adı bulduysak listeye ekle
+        if service_name:
+            services.append(service_name)
             
-    return running_services
+    return services
+
+def get_running_services() -> list[str]:
+    """Sistemde aktif olarak çalışan systemd servislerini listeler."""
+    return _get_services_by_state("running")
+
+def get_failed_services() -> list[str]:
+    """Sistemde 'failed' durumundaki systemd servislerini listeler."""
+    return _get_services_by_state("failed")
