@@ -11,7 +11,8 @@ from checks.check_disk import get_disk_usage
 from checks.check_network import get_network_info
 from checks.check_services import get_running_services, get_failed_services
 from checks.check_drivers import get_missing_pci_drivers, get_gpu_driver_info
-from checks.check_storage import check_smart_health # <-- YENİ MODÜL
+from checks.check_storage import check_smart_health
+from checks.check_security import get_security_summary # <-- YENİ MODÜL
 
 def create_info_table(title: str, data: dict) -> Table:
     """Verilen başlık ve sözlük verisi ile bir rich Table oluşturur."""
@@ -30,12 +31,11 @@ def main():
     # --- FAZ 1: ENVANTER RAPORLAMA ---
     console.print("\n[yellow]--- FAZ 1: ENVANTER RAPORLAMA ---[/yellow]")
     
+    # ... (1'den 5'e kadar olan bölümler aynı, değişiklik yok) ...
     console.print("\n[bold]1. Sistem Envanteri[/bold]")
     console.print(create_info_table("Temel Sistem ve Sürüm Bilgileri", get_system_info()))
-
     console.print("\n[bold]2. Donanım Envanteri[/bold]")
     console.print(create_info_table("Ana Donanım Bileşenleri", get_hardware_info()))
-
     console.print("\n[bold]2.1 Grafik Sürücü (GPU) Denetimi[/bold]")
     gpu_data = get_gpu_driver_info()
     gpu_table = Table(title="[dim]Tespit Edilen Ekran Kartları ve Aktif Sürücüler[/dim]", title_justify="left")
@@ -47,7 +47,6 @@ def main():
         clean_model = gpu['model'].split(':', 1)[-1].strip().split(' (rev', 1)[0]
         gpu_table.add_row(clean_model, styled_driver)
     console.print(gpu_table)
-    
     console.print("\n[bold]3. Disk Kullanım Alanları[/bold]")
     disk_partitions = get_disk_usage()
     disk_table = Table(title="[dim]Fiziksel Disk Bölümleri[/dim]", title_justify="left")
@@ -55,10 +54,8 @@ def main():
     for p in disk_partitions:
         disk_table.add_row(p["device"], p["mountpoint"], p["fstype"], p["total"], p["used"], p["free"], p["percent_used"])
     console.print(disk_table)
-
     console.print("\n[bold]4. Ağ Bilgileri[/bold]")
     console.print(create_info_table("Temel Ağ Yapılandırması", get_network_info()))
-
     console.print("\n[bold]5. Aktif Çalışan Servisler[/bold]")
     running_services = get_running_services()
     if running_services:
@@ -67,14 +64,23 @@ def main():
     # --- FAZ 2: ANALİZ VE ÖNERİ ---
     console.print("\n[yellow]--- FAZ 2: ANALİZ VE ÖNERİ ---[/yellow]")
 
+    # ... (6'dan 9'a kadar olan bölümler aynı) ...
     console.print("\n[bold]6. Servis Sağlık Kontrolü[/bold]")
     failed_services = get_failed_services()
+    # ... (kod aynı)
+    console.print("\n[bold]7. Disk Doluluk Analizi[/bold]")
+    # ... (kod aynı)
+    console.print("\n[bold]8. PCI Aygıt Sürücü Analizi[/bold]")
+    # ... (kod aynı)
+    console.print("\n[bold]9. Disk Fiziksel Sağlık (S.M.A.R.T.) Analizi[/bold]")
+    # ... (kod aynı)
+    
+    # Bu bölümlerin tam kodunu aşağıya ekliyorum
     if failed_services:
         console.print(Panel(Text("\n".join(failed_services), style="bold white"), title="[bold red]DİKKAT: Hatalı Servisler Tespit Edildi![/bold red]", subtitle="[red]Bu servisleri 'systemctl status <servis_adı>' komutu ile kontrol edin.[/red]", border_style="red"))
     else:
         console.print(Panel(Text("Tüm sistem servisleri düzgün çalışıyor.", style="bold green"), title="[bold green]Servis Sağlık Durumu: MÜKEMMEL[/bold green]", border_style="green"))
 
-    console.print("\n[bold]7. Disk Doluluk Analizi[/bold]")
     DISK_USAGE_THRESHOLD = 90.0
     critical_partitions = [p for p in disk_partitions if p["percent_used_raw"] > DISK_USAGE_THRESHOLD]
     if critical_partitions:
@@ -83,37 +89,61 @@ def main():
     else:
         console.print(Panel(Text(f"Tüm disk bölümlerinin doluluk oranı kritik seviyenin (< {DISK_USAGE_THRESHOLD}%) altında.", style="bold green"), title="[bold green]Disk Doluluk Durumu: İYİ[/bold green]", border_style="green"))
 
-    console.print("\n[bold]8. PCI Aygıt Sürücü Analizi[/bold]")
     missing_driver_devices = get_missing_pci_drivers()
     if missing_driver_devices:
         console.print(Panel(Text("\n".join(missing_driver_devices), style="bold white"), title="[bold red]DİKKAT: Sürücüsü Yüklenmemiş Aygıtlar Tespit Edildi![/bold red]", subtitle="[red]Bu aygıtlar için 'linux-firmware' paketini güncellemeyi veya üretici sürücüsü aramayı deneyin.[/red]", border_style="red"))
     else:
         console.print(Panel(Text("Tüm PCI aygıtları için çekirdek sürücüleri aktif görünüyor.", style="bold green"), title="[bold green]Sürücü Durumu: UYUMLU[/bold green]", border_style="green"))
-
-    # --- YENİ EKLENEN BÖLÜM ---
-    # 9. Disk Fiziksel Sağlık (S.M.A.R.T.) Analizi
-    console.print("\n[bold]9. Disk Fiziksel Sağlık (S.M.A.R.T.) Analizi[/bold]")
+    
     smart_health = check_smart_health()
     if smart_health['status'] == 'İYİ':
-        console.print(Panel(
-            Text("Tüm diskler S.M.A.R.T. sağlık testini geçti.", style="bold green"),
-            title="[bold green]Disk Sağlığı: İYİ[/bold green]",
-            border_style="green"
-        ))
+        console.print(Panel(Text("Tüm diskler S.M.A.R.T. sağlık testini geçti.", style="bold green"), title="[bold green]Disk Sağlığı: İYİ[/bold green]", border_style="green"))
     elif smart_health['status'] == 'SORUNLU':
-        console.print(Panel(
-            Text("\n".join(smart_health['failing_disks']), style="bold white"),
-            title="[bold red]ALARM: KRİTİK DİSK HATASI![/bold red]",
-            subtitle="[red]Verilerinizi DERHAL yedekleyin! Bu disk(ler) fiziksel olarak bozuluyor olabilir.[/red]",
-            border_style="red"
-        ))
-    else: # Durum 'BİLİNMİYOR' veya 'YETKİ GEREKLİ' ise
-        console.print(Panel(
-            Text("\n".join(smart_health['failing_disks']), style="bold yellow"),
-            title=f"[bold yellow]UYARI: {smart_health['status']}[/bold yellow]",
-            subtitle="[yellow]Disk sağlığı kontrol edilemedi. Detaylar yukarıdadır.[/yellow]",
-            border_style="yellow"
-        ))
+        console.print(Panel(Text("\n".join(smart_health['failing_disks']), style="bold white"), title="[bold red]ALARM: KRİTİK DİSK HATASI![/bold red]", subtitle="[red]Verilerinizi DERHAL yedekleyin! Bu disk(ler) fiziksel olarak bozuluyor olabilir.[/red]", border_style="red"))
+    else:
+        console.print(Panel(Text("\n".join(smart_health['failing_disks']), style="bold yellow"), title=f"[bold yellow]UYARI: {smart_health['status']}[/bold yellow]", subtitle="[yellow]Disk sağlığı kontrol edilemedi. Detaylar yukarıdadır.[/yellow]", border_style="yellow"))
+
+    # --- YENİ EKLENEN BÖLÜM ---
+    # 10. Güvenlik Özeti
+    console.print("\n[bold]10. Güvenlik Özeti[/bold]")
+    security_info = get_security_summary()
+    security_findings = []
+    is_secure = True
+
+    # Güvenlik güncellemelerini analiz et
+    updates_count = security_info['security_updates_count']
+    if updates_count > 0:
+        security_findings.append(f"[bold red]DİKKAT:[/] {updates_count} adet bekleyen güvenlik güncellemesi var. 'sudo apt upgrade' komutunu çalıştırın.")
+        is_secure = False
+    elif updates_count == 0:
+        security_findings.append("[green]Tebrikler:[/] Bekleyen güvenlik güncellemesi bulunmuyor.")
+    else: # -1 ise
+        security_findings.append("[yellow]Uyarı:[/] Güvenlik güncellemeleri kontrol edilemedi.")
+        is_secure = False
+
+    # Güvenlik duvarı durumunu analiz et
+    fw_status = security_info['firewall_status']
+    if fw_status == 'Aktif':
+        security_findings.append("[green]Bilgi:[/] Güvenlik duvarı (ufw) aktif durumda.")
+    elif fw_status == 'Devre Dışı':
+        security_findings.append("[bold red]KRİTİK:[/] Güvenlik duvarı (ufw) devre dışı! 'sudo ufw enable' komutuyla etkinleştirin.")
+        is_secure = False
+    elif fw_status == 'Kurulu Değil':
+        security_findings.append("[yellow]Öneri:[/] Güvenlik duvarı (ufw) kurulu değil. 'sudo apt install ufw' ile kurabilirsiniz.")
+        is_secure = False
+    elif fw_status == "Yetki Gerekli":
+        security_findings.append("[yellow]Uyarı:[/] Güvenlik duvarı durumu için 'sudo' yetkisi gerekiyor.")
+        is_secure = False
+    
+    panel_color = "green" if is_secure else "yellow"
+    panel_title = "[bold green]Güvenlik Durumu: GÜVENLİ[/]" if is_secure else "[bold yellow]Güvenlik Durumu: İYİLEŞTİRME GEREKLİ[/]"
+    
+    console.print(Panel(
+        Text.from_markup("\n".join(security_findings)),
+        title=panel_title,
+        border_style=panel_color
+    ))
+
 
 if __name__ == "__main__":
     main()

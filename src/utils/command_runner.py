@@ -1,41 +1,38 @@
 import subprocess
 
-def run_command(command: list[str]) -> tuple[str, str, int]:
+def run_command(command: list[str], suppress_stderr: bool = False) -> tuple[str, str, int]:
     """
-    Verilen bir sistem komutunu çalıştırır ve çıktısını, hatasını ve dönüş kodunu döndürür.
-
+    Verilen komutu çalıştırır ve çıktıyı, hatayı ve dönüş kodunu döndürür.
+    `capture_output` kullanılmadan, stdout ve stderr manuel olarak yönetilir.
+    
     Args:
-        command (list[str]): Çalıştırılacak komut ve argümanları bir liste olarak. 
-                             Örnek: ["ls", "-l"]
+        command (list[str]): Çalıştırılacak komut ve argümanları.
+        suppress_stderr (bool, optional): True ise, stderr çıktısı gizlenir. Defaults to False.
 
     Returns:
-        tuple[str, str, int]: (stdout, stderr, returncode)
-                              stdout: Komutun standart çıktısı (başarılı ise).
-                              stderr: Komutun hata çıktısı (hata oluşursa).
-                              returncode: Komutun dönüş kodu (0 genellikle başarı anlamına gelir).
+        tuple[str, str, int]: stdout, stderr, returncode
     """
     try:
-        # subprocess.run ile komutu çalıştırıyoruz.
-        # capture_output=True: stdout ve stderr'i yakalamamızı sağlar.
-        # text=True: Çıktıları metin (string) olarak almamızı sağlar (binary yerine).
-        # check=False: Komut hata verirse (returncode != 0) programın çökmesini engeller.
-        #              Biz hatayı kendimiz yönetmek istiyoruz.
+        # stderr'in nereye gideceğini belirle: /dev/null veya bir PIPE.
+        stderr_destination = subprocess.DEVNULL if suppress_stderr else subprocess.PIPE
+
+        # capture_output=True kullanmaktan kaçın.
+        # stdout ve stderr'i her zaman manuel olarak belirt.
         result = subprocess.run(
-            command, 
-            capture_output=True, 
-            text=True, 
-            check=False
+            command,
+            stdout=subprocess.PIPE,
+            stderr=stderr_destination,
+            text=True,
+            check=False 
         )
         
-        # Yakalanan çıktıları, hataları ve dönüş kodunu bir tuple olarak döndürüyoruz.
-        return (result.stdout.strip(), result.stderr.strip(), result.returncode)
-    
+        # stderr gizlenmişse (DEVNULL'a gönderilmişse), result.stderr None olur.
+        # Bu durumu kontrol edip her zaman bir string döndürdüğümüzden emin olalım.
+        stderr_output = result.stderr if result.stderr is not None else ""
+        
+        return result.stdout, stderr_output, result.returncode
+        
     except FileNotFoundError:
-        # Eğer çalıştırılmak istenen komut sistemde bulunamazsa (örn: "lss" gibi yanlış bir komut)
-        # bu hatayı yakalarız.
-        error_message = f"Hata: '{command[0]}' komutu sistemde bulunamadı."
-        return ("", error_message, -1)
+        return "", f"Komut bulunamadı: {command[0]}", 127
     except Exception as e:
-        # Beklenmedik başka bir hata oluşursa, bunu da yakalayıp bildiririz.
-        error_message = f"Beklenmedik bir hata oluştu: {e}"
-        return ("", error_message, -1)
+        return "", str(e), 1
