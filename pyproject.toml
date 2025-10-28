@@ -1,0 +1,19 @@
+[project]
+name = "linux-teknikeri"
+version = "0.1.0"
+authors = [
+    { name = "ozturu68" },
+]
+description = "Linux sistemleri için basit bir analiz ve raporlama aracı."
+requires-python = ">=3.8"
+dependencies = [
+    "rich",
+    "psutil",
+]
+
+[project.scripts]
+tekniker = "main:main"
+
+# --- DEĞİŞTİRİLEN BÖLÜM ---
+[tool.setuptools.packages.find]
+where = ["src"]
