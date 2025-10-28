@@ -5,6 +5,7 @@ from rich.table import Table
 from checks.check_system import get_system_info
 from checks.check_hardware import get_hardware_info
 from checks.check_disk import get_disk_usage
+from checks.check_network import get_network_info
 
 def create_info_table(title: str, data: dict) -> Table:
     """
@@ -43,7 +44,6 @@ def main():
     console.print("\n[yellow]3. Disk Kullanım Analizi toplanıyor...[/yellow]")
     disk_partitions = get_disk_usage()
     
-    # Disk kullanımı için yeni ve daha detaylı bir tablo oluşturuyoruz.
     disk_table = Table(title="[bold]Disk Kullanım Alanları[/bold]")
     disk_table.add_column("Bölüm", style="cyan")
     disk_table.add_column("Bağlama Noktası", style="magenta")
@@ -53,7 +53,6 @@ def main():
     disk_table.add_column("Boş", justify="right", style="green")
     disk_table.add_column("Kullanım %", justify="right", style="bold red")
 
-    # Her bir disk bölümü için tabloya bir satır ekliyoruz.
     for p in disk_partitions:
         disk_table.add_row(
             p["device"],
@@ -66,6 +65,12 @@ def main():
         )
     
     console.print(disk_table)
+
+    # --- 4. Ağ Analizi ---
+    console.print("\n[yellow]4. Ağ Analizi toplanıyor...[/yellow]")
+    network_data = get_network_info()
+    network_table = create_info_table("Ağ Bilgileri", network_data)
+    console.print(network_table)
 
 
 if __name__ == "__main__":
