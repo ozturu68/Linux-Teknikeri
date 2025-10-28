@@ -11,6 +11,7 @@ from checks.check_disk import get_disk_usage
 from checks.check_network import get_network_info
 from checks.check_services import get_running_services, get_failed_services
 from checks.check_drivers import get_missing_pci_drivers, get_gpu_driver_info
+from checks.check_storage import check_smart_health # <-- YENİ MODÜL
 
 def create_info_table(title: str, data: dict) -> Table:
     """Verilen başlık ve sözlük verisi ile bir rich Table oluşturur."""
@@ -89,6 +90,30 @@ def main():
     else:
         console.print(Panel(Text("Tüm PCI aygıtları için çekirdek sürücüleri aktif görünüyor.", style="bold green"), title="[bold green]Sürücü Durumu: UYUMLU[/bold green]", border_style="green"))
 
+    # --- YENİ EKLENEN BÖLÜM ---
+    # 9. Disk Fiziksel Sağlık (S.M.A.R.T.) Analizi
+    console.print("\n[bold]9. Disk Fiziksel Sağlık (S.M.A.R.T.) Analizi[/bold]")
+    smart_health = check_smart_health()
+    if smart_health['status'] == 'İYİ':
+        console.print(Panel(
+            Text("Tüm diskler S.M.A.R.T. sağlık testini geçti.", style="bold green"),
+            title="[bold green]Disk Sağlığı: İYİ[/bold green]",
+            border_style="green"
+        ))
+    elif smart_health['status'] == 'SORUNLU':
+        console.print(Panel(
+            Text("\n".join(smart_health['failing_disks']), style="bold white"),
+            title="[bold red]ALARM: KRİTİK DİSK HATASI![/bold red]",
+            subtitle="[red]Verilerinizi DERHAL yedekleyin! Bu disk(ler) fiziksel olarak bozuluyor olabilir.[/red]",
+            border_style="red"
+        ))
+    else: # Durum 'BİLİNMİYOR' veya 'YETKİ GEREKLİ' ise
+        console.print(Panel(
+            Text("\n".join(smart_health['failing_disks']), style="bold yellow"),
+            title=f"[bold yellow]UYARI: {smart_health['status']}[/bold yellow]",
+            subtitle="[yellow]Disk sağlığı kontrol edilemedi. Detaylar yukarıdadır.[/yellow]",
+            border_style="yellow"
+        ))
 
 if __name__ == "__main__":
     main()
