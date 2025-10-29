@@ -1,19 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "linux-teknikeri"
-version = "0.1.0"
+version = "0.3.0" # Yapısal değişiklikler için versiyonu artıralım.
 authors = [
     { name = "ozturu68" },
 ]
-description = "Linux sistemleri için basit bir analiz ve raporlama aracı."
+description = "Linux sistemleri için kapsamlı bir analiz ve raporlama aracı."
+readme = "README.md"
 requires-python = ">=3.8"
-dependencies = [
-    "rich",
-    "psutil",
+license = { text = "MIT License" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
 ]
 
-[project.scripts]
-tekniker = "main:main"
+dependencies = [
+    "rich>=13.0",
+    "psutil>=5.0",
+]
 
-# --- DEĞİŞTİRİLEN BÖLÜM ---
+[project.optional-dependencies]
+dev = [
+    "black",
+    "flake8",
+]
+
+# --- NİHAİ GİRİŞ NOKTASI ---
+# Artık projemizin paket yapısı belli: 'linux_teknikeri'
+[project.scripts]
+tekniker = "linux_teknikeri.main:main"
+
+# --- NİHAİ PAKET YAPILANDIRMASI ---
+# setuptools'a paketleri 'src' klasörünün içinde bulmasını söylüyoruz.
+# Geri kalan her şeyi otomatik olarak halledecek.
 [tool.setuptools.packages.find]
 where = ["src"]

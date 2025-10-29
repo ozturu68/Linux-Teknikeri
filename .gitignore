@@ -1,14 +1,25 @@
-# Python Sanal Ortamı
+# Sanal Ortam
+venv/
 /venv/
 
-# Python Önbellek Dosyaları
+# Python önbellek ve derleme artıkları
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
 
-# IDE/Editör Ayarları
+# Kurulum ve dağıtım artıkları
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Hata ayıklama ve log dosyaları
+*.log
+debug_*.py
+
+# IDE ve editör özel dosyaları
 .vscode/
 .idea/
-
-# Geçici Rapor ve Log Dosyaları
-*.txt
-*.log
+*.swp
+*.swo
