@@ -1,29 +1,271 @@
 """
-Disk ve depolama sağlığı analiz modülü.
-S.M.A.R.T. durumu, disk ömrü, sıcaklık ve performans metrikleri kontrolü.
+Disk ve Depolama Sağlığı Analiz Modülü
+======================================
+
+S.M.A.R.T. durumu, disk ömrü, sıcaklık, performans metrikleri ve 
+depolama alanı kontrolü.
+
+Features:
+    - S.M.A.R.T. sağlık durumu kontrolü
+    - Disk sıcaklık ve ömür analizi
+    - Kritik parametre takibi (reallocated sectors, pending sectors)
+    - SSD/HDD algılama ve özel kontroller
+    - Disk I/O performans metrikleri
+    - RAID durumu kontrolü
+    - Disk bağlantı türü (SATA, NVMe, USB) tespiti
+
+Author: ozturu68
+Version: 0.4.0
+Date: 2025-10-29
+License: MIT
 """
+
 import re
 import logging
-from typing import Dict, List, Optional, Tuple
-from ..utils.command_runner import run_command, is_command_available
+from typing import Dict, List, Optional, Tuple, Any
+from enum import Enum
+from dataclasses import dataclass, asdict
 
+from ..utils.command_runner import (
+    run_command, 
+    is_command_available,
+    safe_command_output
+)
+
+# Logger
 log = logging.getLogger(__name__)
 
 
-def check_smart_health() -> Dict[str, any]:
+# =============================================================================
+# ENUM VE DATACLASS TANIMLARI
+# =============================================================================
+
+class HealthStatus(Enum):
+    """Disk sağlık durumu enum'ı."""
+    PASSED = "İYİ"
+    WARNING = "UYARI"
+    FAILED = "SORUNLU"
+    UNKNOWN = "BİLİNMİYOR"
+    NOT_SUPPORTED = "DESTEKLENMEZ"
+    NO_ACCESS = "ERİŞİLEMEZ"
+    PERMISSION_DENIED = "YETKİ GEREKLİ"
+    NOT_AVAILABLE = "KONTROL EDİLEMEDİ"
+
+
+class DiskType(Enum):
+    """Disk tipi enum'ı."""
+    SSD = "SSD"
+    HDD = "HDD"
+    NVME = "NVMe"
+    USB = "USB"
+    UNKNOWN = "Bilinmiyor"
+
+
+@dataclass
+class DiskInfo:
+    """Disk bilgi sınıfı."""
+    device: str
+    health_status: str
+    disk_type: str
+    smart_enabled: bool
+    temperature: Optional[int] = None
+    power_on_hours: Optional[int] = None
+    power_cycle_count: Optional[int] = None
+    reallocated_sectors: Optional[int] = None
+    pending_sectors: Optional[int] = None
+    uncorrectable_errors: Optional[int] = None
+    wear_leveling: Optional[int] = None  # SSD için
+    total_lbas_written: Optional[int] = None  # SSD için
+    model: Optional[str] = None
+    serial: Optional[str] = None
+    firmware: Optional[str] = None
+    capacity: Optional[str] = None
+    interface: Optional[str] = None
+    warnings: List[str] = None
+    
+    def __post_init__(self):
+        if self.warnings is None:
+            self.warnings = []
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Dataclass'ı dictionary'e çevirir."""
+        return asdict(self)
+
+
+# =============================================================================
+# YARDIMCI FONKSİYONLAR
+# =============================================================================
+
+def _detect_disk_type(device: str, smart_output: str) -> DiskType:
+    """
+    Disk tipini (SSD/HDD/NVMe/USB) algılar.
+    
+    Args:
+        device: Disk yolu (örn: /dev/sda)
+        smart_output: smartctl çıktısı
+        
+    Returns:
+        DiskType: Algılanan disk tipi
+    """
+    output_lower = smart_output.lower()
+    
+    # NVMe kontrolü
+    if 'nvme' in device.lower() or 'nvme' in output_lower:
+        return DiskType.NVME
+    
+    # USB kontrolü
+    if 'usb' in output_lower or '/dev/sd' in device and 'usb' in output_lower:
+        return DiskType.USB
+    
+    # SSD kontrolü - birden fazla gösterge
+    ssd_indicators = [
+        'solid state',
+        'ssd',
+        'rotation rate:    solid state device',
+        'rotation rate:    0 rpm',
+        'media type:       solid state',
+        'trim command:     available'
+    ]
+    
+    for indicator in ssd_indicators:
+        if indicator in output_lower:
+            return DiskType.SSD
+    
+    # HDD kontrolü - dönüş hızı varsa HDD'dir
+    if 'rotation rate:' in output_lower and 'rpm' in output_lower:
+        rpm_match = re.search(r'rotation rate:\s*(\d+)\s*rpm', output_lower)
+        if rpm_match and int(rpm_match.group(1)) > 0:
+            return DiskType.HDD
+    
+    # Varsayılan: bilinmiyor
+    return DiskType.UNKNOWN
+
+
+def _parse_smart_attribute(line: str, attr_name: str) -> Optional[int]:
+    """
+    S.M.A.R.T. çıktısından belirli bir özelliği parse eder.
+    
+    Args:
+        line: S.M.A.R.T. satırı
+        attr_name: Aranacak özellik adı
+        
+    Returns:
+        Optional[int]: Bulunan değer veya None
+    """
+    if attr_name.lower() in line.lower():
+        # Satır formatı genellikle: "ID# ATTRIBUTE_NAME ... RAW_VALUE"
+        parts = line.split()
+        if len(parts) >= 10:
+            try:
+                # Son sütun genellikle RAW_VALUE'dur
+                return int(parts[-1])
+            except ValueError:
+                pass
+    return None
+
+
+def _evaluate_disk_health(disk_info: DiskInfo) -> Tuple[str, List[str]]:
+    """
+    Disk parametrelerine göre sağlık durumunu değerlendirir.
+    
+    Args:
+        disk_info: Disk bilgileri
+        
+    Returns:
+        Tuple[str, List[str]]: (sağlık_durumu, uyarı_listesi)
+    """
+    warnings = []
+    status = HealthStatus.PASSED.value
+    
+    # 1. Reallocated Sectors kontrolü (KRİTİK)
+    if disk_info.reallocated_sectors is not None:
+        if disk_info.reallocated_sectors > 0:
+            warnings.append(
+                f"⚠️  {disk_info.reallocated_sectors} yeniden tahsis edilmiş sektör bulundu. "
+                "Disk yüzeyi hasar görebilir."
+            )
+            status = HealthStatus.WARNING.value
+        
+        if disk_info.reallocated_sectors > 10:
+            status = HealthStatus.FAILED.value
+    
+    # 2. Pending Sectors kontrolü (ÇOK KRİTİK)
+    if disk_info.pending_sectors is not None and disk_info.pending_sectors > 0:
+        warnings.append(
+            f"🔴 {disk_info.pending_sectors} bekleyen (unstable) sektör var! "
+            "Veri kaybı riski yüksek!"
+        )
+        status = HealthStatus.FAILED.value
+    
+    # 3. Uncorrectable Errors (KRİTİK)
+    if disk_info.uncorrectable_errors is not None and disk_info.uncorrectable_errors > 0:
+        warnings.append(
+            f"🔴 {disk_info.uncorrectable_errors} düzeltilemeyen hata! "
+            "Diskte ciddi sorun var."
+        )
+        status = HealthStatus.FAILED.value
+    
+    # 4. Sıcaklık kontrolü
+    if disk_info.temperature is not None:
+        if disk_info.temperature > 60:
+            warnings.append(
+                f"🌡️  Disk sıcaklığı yüksek: {disk_info.temperature}°C "
+                "(Önerilen: <50°C)"
+            )
+            if status == HealthStatus.PASSED.value:
+                status = HealthStatus.WARNING.value
+        
+        if disk_info.temperature > 70:
+            warnings.append("🔥 Disk aşırı ısınıyor! Soğutma gerekli.")
+            status = HealthStatus.FAILED.value
+    
+    # 5. SSD için Wear Leveling kontrolü
+    if disk_info.disk_type == DiskType.SSD.value and disk_info.wear_leveling is not None:
+        remaining = disk_info.wear_leveling
+        if remaining < 10:
+            warnings.append(
+                f"⚠️  SSD ömrü %{remaining} kaldı. Yedekleme yapın!"
+            )
+            status = HealthStatus.WARNING.value
+        
+        if remaining < 5:
+            warnings.append("🔴 SSD ömrü kritik seviyede!")
+            status = HealthStatus.FAILED.value
+    
+    # 6. Power-on hours kontrolü (bilgi amaçlı)
+    if disk_info.power_on_hours is not None:
+        hours = disk_info.power_on_hours
+        years = hours / (24 * 365)
+        
+        if years > 5:
+            warnings.append(
+                f"ℹ️  Disk {years:.1f} yıldır kullanımda ({hours:,} saat). "
+                "Yaşlanma belirtileri gösterebilir."
+            )
+    
+    return status, warnings
+
+
+# =============================================================================
+# ANA FONKSİYONLAR
+# =============================================================================
+
+def check_smart_health() -> Dict[str, Any]:
     """
     Tüm fiziksel disklerin S.M.A.R.T. sağlık durumunu kontrol eder.
     
     S.M.A.R.T. (Self-Monitoring, Analysis and Reporting Technology):
-    - Disk arızalarını öngörmeye yardımcı olur
-    - Önemli parametreleri izler (hata oranları, sıcaklık, vb.)
-    - Disk ömrü hakkında bilgi verir
+        - Disk arızalarını öngörmeye yardımcı olur
+        - Önemli parametreleri izler (hata oranları, sıcaklık, vb.)
+        - Disk ömrü hakkında bilgi verir
     
     Returns:
-        Dict: {
-            'status': str,  # İYİ, SORUNLU, KONTROL EDİLEMEDİ, BİLGİ YOK
+        Dict[str, Any]: {
+            'status': str,  # İYİ, SORUNLU, UYARI, KONTROL EDİLEMEDİ
             'failing_disks': List[str],  # Sorunlu disklerin listesi
-            'disk_details': List[Dict]  # Her disk için detaylı bilgi
+            'warning_disks': List[str],  # Uyarı seviyesindeki diskler
+            'disk_details': List[Dict],  # Her disk için detaylı bilgi
+            'summary': Dict[str, int]  # Özet istatistikler
         }
     
     Examples:
@@ -31,495 +273,451 @@ def check_smart_health() -> Dict[str, any]:
         >>> if health['status'] == 'SORUNLU':
         ...     for disk in health['failing_disks']:
         ...         print(f"⚠️  {disk}")
+        >>> 
+        >>> # Disk detaylarına erişim
+        >>> for disk in health['disk_details']:
+        ...     print(f"{disk['device']}: {disk['temperature']}°C")
+    
+    Note:
+        - Bu fonksiyon 'smartmontools' paketini gerektirir
+        - Sudo yetkisi gerekebilir
+        - Sanal diskler (loop, zram) otomatik filtrelenir
     """
     # smartctl komutunun varlığını kontrol et
     if not is_command_available("smartctl"):
+        log.warning("smartctl komutu bulunamadı")
         return {
-            "status": "KONTROL EDİLEMEDİ",
-            "failing_disks": [
+            "status": HealthStatus.NOT_AVAILABLE.value,
+            "failing_disks": [],
+            "warning_disks": [],
+            "disk_details": [],
+            "summary": {
+                "total": 0,
+                "healthy": 0,
+                "warning": 0,
+                "failed": 0,
+                "not_checked": 1
+            },
+            "message": [
                 "'smartmontools' paketi kurulu değil.",
                 "Kurulum: sudo apt install smartmontools"
-            ],
-            "disk_details": []
+            ]
         }
     
     # Fiziksel diskleri listele
-    stdout, stderr, retcode = run_command(["lsblk", "-dno", "NAME,TYPE"], timeout=10)
+    stdout, stderr, retcode = run_command(
+        ["lsblk", "-dno", "NAME,TYPE"], 
+        timeout=10
+    )
     
     if retcode != 0:
+        log.error(f"Diskler listelenemedi: {stderr}")
         return {
-            "status": "KONTROL EDİLEMEDİ",
-            "failing_disks": [f"Diskler listelenemedi: {stderr.strip()}"],
-            "disk_details": []
+            "status": HealthStatus.NOT_AVAILABLE.value,
+            "failing_disks": [],
+            "warning_disks": [],
+            "disk_details": [],
+            "summary": {
+                "total": 0,
+                "healthy": 0,
+                "warning": 0,
+                "failed": 0,
+                "not_checked": 1
+            },
+            "message": [f"Diskler listelenemedi: {stderr.strip()}"]
         }
     
     # Fiziksel diskleri filtrele (loop, zram, vb. sanal diskleri atla)
-    disk_names = [
-        line.split()[0] 
-        for line in stdout.strip().split('\n')
-        if 'disk' in line and not any(x in line for x in ['loop', 'zram', 'ram'])
-    ]
+    disk_names = []
+    for line in stdout.strip().split('\n'):
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        
+        name, dtype = parts[0], parts[1]
+        
+        # Sadece 'disk' tipindeki ve sanal olmayan diskleri al
+        if 'disk' in dtype and not any(x in name for x in ['loop', 'zram', 'ram']):
+            disk_names.append(name)
     
     if not disk_names:
+        log.info("S.M.A.R.T. kontrol edilebilecek fiziksel disk bulunamadı")
         return {
-            "status": "BİLGİ YOK",
-            "failing_disks": ["S.M.A.R.T. kontrol edilebilecek fiziksel disk bulunamadı."],
-            "disk_details": []
+            "status": HealthStatus.NOT_AVAILABLE.value,
+            "failing_disks": [],
+            "warning_disks": [],
+            "disk_details": [],
+            "summary": {
+                "total": 0,
+                "healthy": 0,
+                "warning": 0,
+                "failed": 0,
+                "not_checked": 1
+            },
+            "message": ["S.M.A.R.T. kontrol edilebilecek fiziksel disk bulunamadı."]
         }
     
+    # Her disk için S.M.A.R.T. analizi yap
     failing_disks = []
+    warning_disks = []
     disk_details = []
-    all_ok = True
+    summary = {
+        "total": len(disk_names),
+        "healthy": 0,
+        "warning": 0,
+        "failed": 0,
+        "not_checked": 0
+    }
     
     for disk in disk_names:
         device_path = f"/dev/{disk}"
-        disk_info = _analyze_disk_smart(device_path)
-        disk_details.append(disk_info)
+        log.debug(f"S.M.A.R.T. kontrolü yapılıyor: {device_path}")
         
-        if disk_info['health_status'] not in ['PASSED', 'OK']:
-            all_ok = False
-            failing_disks.append(f"{device_path}: {disk_info['health_status']}")
+        disk_info = _analyze_disk_smart(device_path)
+        disk_details.append(disk_info.to_dict())
+        
+        # Kategorize et
+        if disk_info.health_status == HealthStatus.FAILED.value:
+            failing_disks.append(f"{device_path}: {disk_info.health_status}")
+            summary['failed'] += 1
+        elif disk_info.health_status == HealthStatus.WARNING.value:
+            warning_disks.append(f"{device_path}: {disk_info.health_status}")
+            summary['warning'] += 1
+        elif disk_info.health_status == HealthStatus.PASSED.value:
+            summary['healthy'] += 1
+        else:
+            summary['not_checked'] += 1
     
-    if not all_ok:
-        return {
-            "status": "SORUNLU",
-            "failing_disks": failing_disks,
-            "disk_details": disk_details
-        }
+    # Genel durumu belirle
+    overall_status = HealthStatus.PASSED.value
+    if failing_disks:
+        overall_status = HealthStatus.FAILED.value
+    elif warning_disks:
+        overall_status = HealthStatus.WARNING.value
+    elif summary['not_checked'] == summary['total']:
+        overall_status = HealthStatus.NOT_AVAILABLE.value
     
     return {
-        "status": "İYİ",
-        "failing_disks": [],
-        "disk_details": disk_details
+        "status": overall_status,
+        "failing_disks": failing_disks,
+        "warning_disks": warning_disks,
+        "disk_details": disk_details,
+        "summary": summary
     }
 
 
-def _analyze_disk_smart(device_path: str) -> Dict[str, any]:
+def _analyze_disk_smart(device: str) -> DiskInfo:
     """
-    Tek bir diskin S.M.A.R.T. verilerini detaylı olarak analiz eder.
+    Tek bir disk için detaylı S.M.A.R.T. analizi yapar.
     
     Args:
-        device_path: Disk yolu (örn: /dev/sda)
-    
+        device: Disk yolu (örn: /dev/sda)
+        
     Returns:
-        Dict: Disk sağlık bilgileri
+        DiskInfo: Disk detay bilgileri
     """
-    disk_info = {
-        'device': device_path,
-        'health_status': 'UNKNOWN',
-        'temperature': 'N/A',
-        'power_on_hours': 'N/A',
-        'power_cycle_count': 'N/A',
-        'reallocated_sectors': 'N/A',
-        'wear_leveling': 'N/A',  # SSD için
-        'model': 'N/A',
-        'serial': 'N/A',
-        'capacity': 'N/A',
-        'smart_support': False,
-        'warnings': []
-    }
-    
-    # Önce genel bilgileri al (-i parametresi)
-    stdout_info, stderr_info, retcode_info = run_command(
-        ["sudo", "smartctl", "-i", device_path],
-        timeout=10
+    disk_info = DiskInfo(
+        device=device,
+        health_status=HealthStatus.UNKNOWN.value,
+        disk_type=DiskType.UNKNOWN.value,
+        smart_enabled=False
     )
     
-    if retcode_info == 0 and stdout_info:
-        # Model
-        model_match = re.search(r'Device Model:\s+(.+)', stdout_info)
-        if model_match:
-            disk_info['model'] = model_match.group(1).strip()
-        else:
-            # NVMe diskler için alternatif
-            model_match = re.search(r'Model Number:\s+(.+)', stdout_info)
-            if model_match:
-                disk_info['model'] = model_match.group(1).strip()
-        
-        # Seri numarası
-        serial_match = re.search(r'Serial [Nn]umber:\s+(.+)', stdout_info)
-        if serial_match:
-            disk_info['serial'] = serial_match.group(1).strip()
-        
-        # Kapasite
-        capacity_match = re.search(r'User Capacity:\s+[\d,]+ bytes \[(.+?)\]', stdout_info)
-        if capacity_match:
-            disk_info['capacity'] = capacity_match.group(1).strip()
-        
-        # S.M.A.R.T. desteği
-        if 'SMART support is: Available' in stdout_info or 'SMART support is: Enabled' in stdout_info:
-            disk_info['smart_support'] = True
+    # S.M.A.R.T. bilgisini al (sudo gerektirir)
+    stdout, stderr, retcode = run_command(
+        ["sudo", "smartctl", "-a", device],
+        timeout=15,
+        suppress_stderr=True
+    )
     
-    if not disk_info['smart_support']:
-        disk_info['health_status'] = 'S.M.A.R.T. desteklenmiyor'
+    # Hata kontrolü
+    if retcode == 127:
+        disk_info.health_status = HealthStatus.NOT_AVAILABLE.value
+        disk_info.warnings.append("smartctl komutu bulunamadı")
         return disk_info
     
-    # Sağlık durumunu kontrol et (-H parametresi)
-    stdout_health, stderr_health, retcode_health = run_command(
-        ["sudo", "smartctl", "-H", device_path],
-        timeout=10
-    )
-    
-    if retcode_health == 0 and stdout_health:
-        if "PASSED" in stdout_health.upper():
-            disk_info['health_status'] = 'PASSED'
-        elif "OK" in stdout_health.upper():
-            disk_info['health_status'] = 'OK'
+    if retcode not in [0, 4]:  # 4 = bazı eşikler aşıldı ama hala okunabilir
+        # Disk S.M.A.R.T. desteklemiyor veya erişim hatası
+        if "Permission denied" in stderr or "Yetki" in stderr:
+            disk_info.health_status = HealthStatus.PERMISSION_DENIED.value
+        elif "SMART support is: Unavailable" in stdout or "SMART support is: Disabled" in stdout:
+            disk_info.health_status = HealthStatus.NOT_SUPPORTED.value
         else:
-            # Durum satırını bul
-            for line in stdout_health.split('\n'):
-                if 'test result' in line.lower():
-                    disk_info['health_status'] = line.split(':')[-1].strip()
-                    break
-    else:
-        if "unavailable" in stderr_health.lower() or "unable" in stderr_health.lower():
-            disk_info['health_status'] = 'Kontrol edilemedi (Yetki veya uyumluluk sorunu)'
-        else:
-            disk_info['health_status'] = 'FAILED'
+            disk_info.health_status = HealthStatus.NO_ACCESS.value
+        return disk_info
     
-    # Detaylı S.M.A.R.T. değerlerini al (-A parametresi)
-    stdout_attrs, stderr_attrs, retcode_attrs = run_command(
-        ["sudo", "smartctl", "-A", device_path],
-        timeout=10
+    disk_info.smart_enabled = True
+    
+    # Disk tipini algıla
+    disk_info.disk_type = _detect_disk_type(device, stdout).value
+    
+    # Temel sağlık durumu
+    health_match = re.search(
+        r'SMART overall-health self-assessment test result:\s*(\w+)', 
+        stdout,
+        re.IGNORECASE
     )
+    if health_match:
+        status_text = health_match.group(1).upper()
+        if status_text == 'PASSED':
+            disk_info.health_status = HealthStatus.PASSED.value
+        else:
+            disk_info.health_status = HealthStatus.FAILED.value
     
-    if retcode_attrs == 0 and stdout_attrs:
+    # Model, Serial, Firmware
+    model_match = re.search(r'(?:Device Model|Model Number|Product):\s*(.+)', stdout)
+    if model_match:
+        disk_info.model = model_match.group(1).strip()
+    
+    serial_match = re.search(r'Serial Number:\s*(.+)', stdout)
+    if serial_match:
+        disk_info.serial = serial_match.group(1).strip()
+    
+    firmware_match = re.search(r'Firmware Version:\s*(.+)', stdout)
+    if firmware_match:
+        disk_info.firmware = firmware_match.group(1).strip()
+    
+    # Kapasite
+    capacity_match = re.search(r'User Capacity:\s*([^\[]+)', stdout)
+    if capacity_match:
+        disk_info.capacity = capacity_match.group(1).strip()
+    
+    # Interface
+    interface_match = re.search(r'SATA Version is:\s*(.+)', stdout)
+    if interface_match:
+        disk_info.interface = "SATA " + interface_match.group(1).strip()
+    elif 'nvme' in device.lower():
+        disk_info.interface = "NVMe"
+    
+    # S.M.A.R.T. özelliklerini parse et
+    for line in stdout.split('\n'):
         # Sıcaklık
-        temp_match = re.search(r'194 Temperature.*\s+(\d+)', stdout_attrs)
-        if temp_match:
-            temp = int(temp_match.group(1))
-            disk_info['temperature'] = f"{temp}°C"
-            
-            # Sıcaklık uyarıları
-            if temp > 60:
-                disk_info['warnings'].append(f"⚠️  Yüksek sıcaklık: {temp}°C (normal: <50°C)")
-            elif temp > 50:
-                disk_info['warnings'].append(f"⚡ Sıcaklık yükselmiş: {temp}°C")
+        if 'temperature' in line.lower() or 'airflow_temperature' in line.lower():
+            temp = _parse_smart_attribute(line, 'temperature')
+            if temp and temp < 100:  # Mantıklı bir sıcaklık değeri
+                disk_info.temperature = temp
         
-        # Çalışma saati
-        hours_match = re.search(r'9 Power_On_Hours.*\s+(\d+)', stdout_attrs)
-        if hours_match:
-            hours = int(hours_match.group(1))
-            disk_info['power_on_hours'] = f"{hours} saat ({hours // 24} gün)"
-            
-            # Ömür uyarıları
-            if hours > 43800:  # 5 yıl
-                disk_info['warnings'].append(f"🕐 Disk yaşlı: {hours // 8760} yıl kullanılmış")
+        # Power-on Hours
+        if 'power_on_hours' in line.lower() or 'power-on hours' in line.lower():
+            hours = _parse_smart_attribute(line, 'power_on_hours')
+            if hours:
+                disk_info.power_on_hours = hours
         
-        # Açma-kapama döngüsü
-        cycle_match = re.search(r'12 Power_Cycle_Count.*\s+(\d+)', stdout_attrs)
-        if cycle_match:
-            disk_info['power_cycle_count'] = cycle_match.group(1)
+        # Power Cycle Count
+        if 'power_cycle_count' in line.lower():
+            cycles = _parse_smart_attribute(line, 'power_cycle_count')
+            if cycles:
+                disk_info.power_cycle_count = cycles
         
-        # Yeniden tahsis edilmiş sektörler (ÖNEMLİ!)
-        realloc_match = re.search(r'5 Reallocated_Sector_Ct.*\s+(\d+)', stdout_attrs)
-        if realloc_match:
-            realloc = int(realloc_match.group(1))
-            disk_info['reallocated_sectors'] = str(realloc)
-            
-            if realloc > 0:
-                disk_info['warnings'].append(
-                    f"⚠️  KRİTİK: {realloc} sektör yeniden tahsis edilmiş! "
-                    f"Disk arızalanıyor olabilir, yedek alın!"
-                )
+        # Reallocated Sectors (KRİTİK)
+        if 'reallocated_sector' in line.lower():
+            realloc = _parse_smart_attribute(line, 'reallocated_sector')
+            if realloc is not None:
+                disk_info.reallocated_sectors = realloc
         
-        # SSD için Wear Leveling
-        wear_match = re.search(r'177 Wear_Leveling_Count.*\s+(\d+)', stdout_attrs)
-        if wear_match:
-            wear = int(wear_match.group(1))
-            disk_info['wear_leveling'] = f"{wear}%"
-            
-            if wear < 10:
-                disk_info['warnings'].append(
-                    f"⚠️  SSD ömrü azaldı: %{wear} kaldı. Değiştirme zamanı yaklaşıyor."
-                )
+        # Current Pending Sectors (ÇOK KRİTİK)
+        if 'current_pending_sector' in line.lower():
+            pending = _parse_smart_attribute(line, 'current_pending_sector')
+            if pending is not None:
+                disk_info.pending_sectors = pending
         
-        # Bekleyen sektörler
-        pending_match = re.search(r'197 Current_Pending_Sector.*\s+(\d+)', stdout_attrs)
-        if pending_match:
-            pending = int(pending_match.group(1))
-            if pending > 0:
-                disk_info['warnings'].append(
-                    f"⚠️  {pending} bekleyen hatalı sektör var!"
-                )
+        # Offline Uncorrectable
+        if 'offline_uncorrectable' in line.lower():
+            uncorr = _parse_smart_attribute(line, 'offline_uncorrectable')
+            if uncorr is not None:
+                disk_info.uncorrectable_errors = uncorr
+        
+        # SSD: Wear Leveling Count
+        if 'wear_leveling_count' in line.lower() or 'percentage used' in line.lower():
+            wear = _parse_smart_attribute(line, 'wear_leveling')
+            if wear is not None:
+                disk_info.wear_leveling = wear
+        
+        # SSD: Total LBAs Written
+        if 'total_lbas_written' in line.lower():
+            lbas = _parse_smart_attribute(line, 'total_lbas_written')
+            if lbas is not None:
+                disk_info.total_lbas_written = lbas
+    
+    # Sağlık durumunu yeniden değerlendir
+    evaluated_status, warnings = _evaluate_disk_health(disk_info)
+    disk_info.health_status = evaluated_status
+    disk_info.warnings.extend(warnings)
     
     return disk_info
 
 
-def get_disk_io_stats() -> List[Dict[str, str]]:
+# =============================================================================
+# DISK I/O İSTATİSTİKLERİ
+# =============================================================================
+
+def get_disk_io_stats(interval: float = 1.0) -> List[Dict[str, Any]]:
     """
-    Disk I/O (Giriş/Çıkış) istatistiklerini alır.
+    Disk I/O istatistiklerini toplar (okuma/yazma hızları).
     
-    Hangi diskler ne kadar veri okuyor/yazıyor?
-    Bu bilgi performans sorunlarını tespit etmeye yardımcı olur.
+    Args:
+        interval: Ölçüm aralığı (saniye, varsayılan: 1.0)
     
     Returns:
-        List[Dict]: Her disk için I/O istatistikleri
-        
+        List[Dict[str, Any]]: Her disk için I/O istatistikleri
+            {
+                'device': str,
+                'read_mb_per_sec': float,
+                'write_mb_per_sec': float,
+                'read_ops_per_sec': float,
+                'write_ops_per_sec': float
+            }
+    
     Examples:
-        >>> io_stats = get_disk_io_stats()
-        >>> for disk in io_stats:
-        ...     print(f"{disk['device']}: {disk['read_mb']} MB okundu, {disk['written_mb']} MB yazıldı")
+        >>> stats = get_disk_io_stats()
+        >>> for disk in stats:
+        ...     print(f"{disk['device']}: R={disk['read_mb_per_sec']:.2f} MB/s")
+    
+    Note:
+        Bu fonksiyon psutil kütüphanesini gerektirir.
     """
-    stdout, stderr, retcode = run_command(["iostat", "-d", "-m"], timeout=5)
-    
-    if retcode != 0:
-        log.warning("iostat komutu bulunamadı. sysstat paketini kurun: sudo apt install sysstat")
-        return []
-    
-    io_stats = []
-    lines = stdout.strip().split('\n')
-    
-    # Başlık satırlarını atla, sadece veri satırlarını al
-    data_started = False
-    for line in lines:
-        if line.startswith('Device'):
-            data_started = True
-            continue
+    try:
+        import psutil
+        import time
         
-        if data_started and line.strip():
+        # İlk ölçüm
+        io_counters_1 = psutil.disk_io_counters(perdisk=True)
+        
+        # Bekleme
+        time.sleep(interval)
+        
+        # İkinci ölçüm
+        io_counters_2 = psutil.disk_io_counters(perdisk=True)
+        
+        disk_stats = []
+        
+        for disk_name in io_counters_1:
+            # Fiziksel diskleri filtrele
+            if any(x in disk_name for x in ['loop', 'zram', 'ram']):
+                continue
+            
+            c1 = io_counters_1[disk_name]
+            c2 = io_counters_2[disk_name]
+            
+            # Fark hesapla (per second)
+            read_bytes_per_sec = (c2.read_bytes - c1.read_bytes) / interval
+            write_bytes_per_sec = (c2.write_bytes - c1.write_bytes) / interval
+            read_ops_per_sec = (c2.read_count - c1.read_count) / interval
+            write_ops_per_sec = (c2.write_count - c1.write_count) / interval
+            
+            disk_stats.append({
+                'device': disk_name,
+                'read_mb_per_sec': read_bytes_per_sec / (1024 * 1024),
+                'write_mb_per_sec': write_bytes_per_sec / (1024 * 1024),
+                'read_ops_per_sec': read_ops_per_sec,
+                'write_ops_per_sec': write_ops_per_sec,
+                'read_total_mb': c2.read_bytes / (1024 * 1024),
+                'write_total_mb': c2.write_bytes / (1024 * 1024),
+                'busy_time_ms': c2.busy_time
+            })
+        
+        return disk_stats
+        
+    except ImportError:
+        log.error("psutil kütüphanesi bulunamadı")
+        return []
+    except Exception as e:
+        log.error(f"Disk I/O istatistikleri alınamadı: {e}")
+        return []
+
+
+# =============================================================================
+# RAID DURUMU KONTROLÜ
+# =============================================================================
+
+def check_raid_status() -> Dict[str, Any]:
+    """
+    Software RAID (mdadm) durumunu kontrol eder.
+    
+    Returns:
+        Dict[str, Any]: RAID durumu bilgileri
+    
+    Examples:
+        >>> raid = check_raid_status()
+        >>> if raid['arrays']:
+        ...     for array in raid['arrays']:
+        ...         print(f"{array['device']}: {array['state']}")
+    """
+    if not is_command_available("mdadm"):
+        return {
+            "available": False,
+            "message": "mdadm kurulu değil (Software RAID kullanılmıyor)"
+        }
+    
+    # /proc/mdstat dosyasını kontrol et
+    stdout, stderr, retcode = run_command(["cat", "/proc/mdstat"], timeout=5)
+    
+    if retcode != 0 or not stdout.strip():
+        return {
+            "available": True,
+            "arrays": [],
+            "message": "RAID array bulunamadı"
+        }
+    
+    arrays = []
+    current_array = None
+    
+    for line in stdout.split('\n'):
+        line = line.strip()
+        
+        # Array satırı: md0 : active raid1 sda1[0] sdb1[1]
+        if line.startswith('md'):
             parts = line.split()
-            if len(parts) >= 6:
-                io_stats.append({
-                    'device': parts[0],
-                    'read_mb': parts[2],
-                    'written_mb': parts[3],
-                    'tps': parts[1]  # Transfers per second
+            if len(parts) >= 4:
+                current_array = {
+                    'device': f"/dev/{parts[0]}",
+                    'state': parts[2],
+                    'level': parts[3],
+                    'disks': []
+                }
+                arrays.append(current_array)
+        
+        # Disk durumu satırı
+        elif current_array and '[' in line and ']' in line:
+            # Disk bilgilerini parse et
+            disk_matches = re.findall(r'(\w+)\[(\d+)\](?:\((\w+)\))?', line)
+            for disk, num, status in disk_matches:
+                current_array['disks'].append({
+                    'name': disk,
+                    'number': int(num),
+                    'status': status if status else 'active'
                 })
     
-    return io_stats
-
-
-def check_disk_fragmentation(mount_point: str = '/') -> Dict[str, str]:
-    """
-    Disk parçalanmasını kontrol eder (sadece ext4 için).
-    
-    Not: Linux dosya sistemleri (ext4, btrfs, xfs) genellikle otomatik olarak 
-    parçalanmayı minimize eder. Windows'taki kadar önemli değildir.
-    
-    Args:
-        mount_point: Kontrol edilecek bağlama noktası
-    
-    Returns:
-        Dict: Parçalanma yüzdesi ve durumu
-    """
-    result = {
-        'mount_point': mount_point,
-        'fragmentation': 'N/A',
-        'recommendation': 'N/A'
+    return {
+        "available": True,
+        "arrays": arrays,
+        "total_arrays": len(arrays)
     }
-    
-    # e4defrag komutuyla kontrol et (sadece ext4 için)
-    stdout, stderr, retcode = run_command(["sudo", "e4defrag", "-c", mount_point], timeout=30)
-    
-    if retcode == 0 and stdout:
-        # Çıktıdan parçalanma yüzdesini bul
-        frag_match = re.search(r'fragmentation:\s+([\d.]+)%', stdout)
-        if frag_match:
-            frag_percent = float(frag_match.group(1))
-            result['fragmentation'] = f"{frag_percent}%"
-            
-            if frag_percent > 30:
-                result['recommendation'] = "Yüksek parçalanma. 'sudo e4defrag /' komutuyla birleştirme yapabilirsiniz."
-            elif frag_percent > 10:
-                result['recommendation'] = "Orta seviye parçalanma. İzlemeye devam edin."
-            else:
-                result['recommendation'] = "Parçalanma seviyesi normal, işlem gerekmez."
-    
-    return result
 
 
-def get_nvme_health() -> List[Dict[str, any]]:
-    """
-    NVMe SSD'lerin özel sağlık metriklerini alır.
-    
-    NVMe diskler farklı S.M.A.R.T. parametreleri kullanır ve 
-    daha detaylı sağlık bilgileri sağlar.
-    
-    Returns:
-        List[Dict]: Her NVMe disk için sağlık bilgileri
-    """
-    nvme_disks = []
-    
-    # NVMe diskleri bul
-    stdout, stderr, retcode = run_command(["lsblk", "-dno", "NAME,TYPE"], timeout=5)
-    
-    if retcode == 0:
-        for line in stdout.strip().split('\n'):
-            if 'disk' in line:
-                disk_name = line.split()[0]
-                if disk_name.startswith('nvme'):
-                    device_path = f"/dev/{disk_name}"
-                    nvme_info = _get_nvme_smart(device_path)
-                    if nvme_info:
-                        nvme_disks.append(nvme_info)
-    
-    return nvme_disks
+# =============================================================================
+# ÖRNEK KULLANIM
+# =============================================================================
 
-
-def _get_nvme_smart(device_path: str) -> Optional[Dict[str, any]]:
-    """NVMe disk için özel S.M.A.R.T. bilgilerini alır."""
+if __name__ == "__main__":
+    # Test
+    import json
     
-    stdout, stderr, retcode = run_command(
-        ["sudo", "smartctl", "-a", device_path],
-        timeout=10
-    )
+    logging.basicConfig(level=logging.DEBUG)
     
-    if retcode != 0:
-        return None
+    print("=== Depolama Sağlık Kontrolü Test ===\n")
     
-    nvme_info = {
-        'device': device_path,
-        'model': 'N/A',
-        'capacity': 'N/A',
-        'temperature': 'N/A',
-        'percentage_used': 'N/A',  # NVMe'ye özel
-        'available_spare': 'N/A',  # NVMe'ye özel
-        'data_written': 'N/A',
-        'data_read': 'N/A',
-        'warnings': []
-    }
+    # S.M.A.R.T. kontrolü
+    print("1. S.M.A.R.T. Sağlık Kontrolü:")
+    health = check_smart_health()
+    print(json.dumps(health, indent=2, ensure_ascii=False))
     
-    # Model
-    model_match = re.search(r'Model Number:\s+(.+)', stdout)
-    if model_match:
-        nvme_info['model'] = model_match.group(1).strip()
+    print("\n2. Disk I/O İstatistikleri:")
+    io_stats = get_disk_io_stats()
+    print(json.dumps(io_stats, indent=2, ensure_ascii=False))
     
-    # Kapasite
-    capacity_match = re.search(r'Namespace 1 Size/Capacity:\s+(.+)', stdout)
-    if capacity_match:
-        nvme_info['capacity'] = capacity_match.group(1).strip()
+    print("\n3. RAID Durumu:")
+    raid = check_raid_status()
+    print(json.dumps(raid, indent=2, ensure_ascii=False))
     
-    # Sıcaklık
-    temp_match = re.search(r'Temperature:\s+(\d+)\s+Celsius', stdout)
-    if temp_match:
-        temp = int(temp_match.group(1))
-        nvme_info['temperature'] = f"{temp}°C"
-        if temp > 70:
-            nvme_info['warnings'].append(f"⚠️  Yüksek sıcaklık: {temp}°C")
-    
-    # Kullanılan yüzde (SSD ömrü)
-    used_match = re.search(r'Percentage Used:\s+(\d+)%', stdout)
-    if used_match:
-        used = int(used_match.group(1))
-        nvme_info['percentage_used'] = f"{used}%"
-        if used > 80:
-            nvme_info['warnings'].append(f"⚠️  SSD ömrü azaldı: %{used} kullanılmış")
-    
-    # Yedek alan
-    spare_match = re.search(r'Available Spare:\s+(\d+)%', stdout)
-    if spare_match:
-        spare = int(spare_match.group(1))
-        nvme_info['available_spare'] = f"{spare}%"
-        if spare < 10:
-            nvme_info['warnings'].append(f"⚠️  Yedek alan azaldı: %{spare} kaldı")
-    
-    # Yazılan veri
-    written_match = re.search(r'Data Units Written:\s+[\d,]+\s+\[(.+?)\]', stdout)
-    if written_match:
-        nvme_info['data_written'] = written_match.group(1).strip()
-    
-    # Okunan veri
-    read_match = re.search(r'Data Units Read:\s+[\d,]+\s+\[(.+?)\]', stdout)
-    if read_match:
-        nvme_info['data_read'] = read_match.group(1).strip()
-    
-    return nvme_info
-
-
-def estimate_disk_lifespan(disk_details: List[Dict]) -> List[Dict[str, str]]:
-    """
-    Disklerin tahmini kalan ömrünü hesaplar.
-    
-    Args:
-        disk_details: check_smart_health() fonksiyonundan gelen disk bilgileri
-    
-    Returns:
-        List[Dict]: Her disk için ömür tahmini
-    """
-    lifespan_estimates = []
-    
-    for disk in disk_details:
-        estimate = {
-            'device': disk.get('device', 'N/A'),
-            'model': disk.get('model', 'N/A'),
-            'estimated_lifespan': 'N/A',
-            'recommendation': ''
-        }
-        
-        # Çalışma saatine göre tahmin (ortalama disk ömrü: 5-7 yıl = ~50,000 saat)
-        power_on_hours = disk.get('power_on_hours', 'N/A')
-        if power_on_hours != 'N/A' and 'saat' in power_on_hours:
-            try:
-                hours = int(power_on_hours.split()[0])
-                remaining_hours = 50000 - hours
-                remaining_years = remaining_hours / 8760
-                
-                if remaining_years < 0:
-                    estimate['estimated_lifespan'] = "Beklenen ömür aşıldı"
-                    estimate['recommendation'] = "🔴 Diski acilen değiştirin ve yedek alın!"
-                elif remaining_years < 1:
-                    estimate['estimated_lifespan'] = f"~{int(remaining_years * 12)} ay"
-                    estimate['recommendation'] = "🟠 Yedek almayı planlamalısınız"
-                else:
-                    estimate['estimated_lifespan'] = f"~{remaining_years:.1f} yıl"
-                    estimate['recommendation'] = "🟢 Disk sağlıklı görünüyor"
-            except (ValueError, IndexError):
-                pass
-        
-        # Yeniden tahsis edilmiş sektörler varsa ömür tahmini değişir
-        reallocated = disk.get('reallocated_sectors', 'N/A')
-        if reallocated != 'N/A' and reallocated != '0':
-            estimate['recommendation'] = "🔴 KRİTİK: Disk arızalanıyor! Acil yedek alın!"
-        
-        # SSD için wear leveling kontrolü
-        wear = disk.get('wear_leveling', 'N/A')
-        if wear != 'N/A' and '%' in wear:
-            try:
-                wear_percent = int(wear.replace('%', ''))
-                if wear_percent < 20:
-                    estimate['recommendation'] = "🟠 SSD ömrü azalıyor, yedekleme yapın"
-            except ValueError:
-                pass
-        
-        lifespan_estimates.append(estimate)
-    
-    return lifespan_estimates
-
-
-def get_filesystem_errors(mount_point: str = '/') -> Dict[str, any]:
-    """
-    Dosya sistemi hatalarını dmesg ve syslog'dan tarar.
-    
-    Args:
-        mount_point: Kontrol edilecek bağlama noktası
-    
-    Returns:
-        Dict: Bulunan hata sayısı ve örnekler
-    """
-    result = {
-        'error_count': 0,
-        'warning_count': 0,
-        'sample_errors': []
-    }
-    
-    # dmesg'den hata ara
-    stdout, stderr, retcode = run_command(["sudo", "dmesg", "-T"], timeout=10)
-    
-    if retcode == 0:
-        error_keywords = ['I/O error', 'EXT4-fs error', 'Buffer I/O error', 'SMART error']
-        warning_keywords = ['EXT4-fs warning', 'disk warning']
-        
-        for line in stdout.split('\n'):
-            line_lower = line.lower()
-            
-            if any(keyword.lower() in line_lower for keyword in error_keywords):
-                result['error_count'] += 1
-                if len(result['sample_errors']) < 5:
-                    # Zaman damgasını da al
-                    result['sample_errors'].append(line.strip())
-            
-            if any(keyword.lower() in line_lower for keyword in warning_keywords):
-                result['warning_count'] += 1
-    
-    return result
+    print("\n=== Test Tamamlandı ===")
