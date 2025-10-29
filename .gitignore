@@ -22,4 +22,4 @@ debug_*.py
 .vscode/
 .idea/
 *.swp
-*.swo
+*.swovenv/

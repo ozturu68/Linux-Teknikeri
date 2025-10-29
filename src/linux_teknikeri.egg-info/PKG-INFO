@@ -1,16 +1,47 @@
 Metadata-Version: 2.4
 Name: linux-teknikeri
 Version: 0.3.0
-Summary: Linux sistemleri için kapsamlı bir analiz ve raporlama aracı.
-Author: ozturu68
-License: MIT License
-Classifier: Programming Language :: Python :: 3
+Summary: Pop!_OS ve Debian tabanlı sistemler için kapsamlı sistem analiz ve bakım aracı
+Author-email: ozturu68 <ozturu68@users.noreply.github.com>
+Maintainer-email: ozturu68 <ozturu68@users.noreply.github.com>
+License: MIT
+Project-URL: Homepage, https://github.com/ozturu68/Linux-Teknikeri
+Project-URL: Repository, https://github.com/ozturu68/Linux-Teknikeri
+Project-URL: Bug Tracker, https://github.com/ozturu68/Linux-Teknikeri/issues
+Project-URL: Changelog, https://github.com/ozturu68/Linux-Teknikeri/blob/main/CHANGELOG.md
+Project-URL: Documentation, https://github.com/ozturu68/Linux-Teknikeri#readme
+Keywords: linux,system-monitor,diagnostic,hardware-info,system-analysis,debian,pop-os,ubuntu
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: System Administrators
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: End Users/Desktop
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: POSIX :: Linux
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Topic :: System :: Monitoring
+Classifier: Topic :: System :: Systems Administration
+Classifier: Topic :: Utilities
+Classifier: Typing :: Typed
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
-Requires-Dist: rich>=13.0
-Requires-Dist: psutil>=5.0
+Requires-Dist: rich<14.0.0,>=13.0.0
+Requires-Dist: psutil<6.0.0,>=5.9.0
 Provides-Extra: dev
-Requires-Dist: black; extra == "dev"
-Requires-Dist: flake8; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Requires-Dist: pre-commit>=3.0.0; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: mkdocs>=1.5.0; extra == "docs"
+Requires-Dist: mkdocs-material>=9.0.0; extra == "docs"
+Requires-Dist: mkdocstrings[python]>=0.24.0; extra == "docs"
+Provides-Extra: all
+Requires-Dist: linux-teknikeri[dev,docs]; extra == "all"
